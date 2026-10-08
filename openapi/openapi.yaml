@@ -1,0 +1,493 @@
+openapi: 3.0.3
+info:
+  title: Smart File Backup System - Team B Deduplication & Integrity Engine API
+  version: 1.0.0
+  description: |
+    Production OpenAPI 3.0 contract for Team B (Data Structures Engine).
+    Provides deterministic file chunking (fixed & Rabin-Karp CDC), hash index registries 
+    (AVL Tree, Red-Black Tree, Hash Map), deduplication computation, delta sizing, 
+    and Merkle tree integrity verification.
+servers:
+  - url: http://localhost:8000
+    description: Local development / integration server
+
+paths:
+  /health:
+    get:
+      summary: Health and Readiness Check
+      description: Returns service health status and metadata.
+      responses:
+        '200':
+          description: Service is operational
+          content:
+            application/json:
+              example:
+                data:
+                  status: "UP"
+                  service: "Team B Deduplication & Integrity Engine"
+                meta:
+                  correlation_id: "corr-12345"
+                  api_version: "v1"
+                  timestamp: "2026-10-07T12:00:00Z"
+
+  /api/v1/dedup/compute:
+    post:
+      summary: Compute Deduplication and Delta
+      description: |
+        Primary contract for Teams C & D. Chunks the input file deterministically, 
+        queries the hash index, identifies unique vs duplicate chunks, calculates delta size 
+        and storage savings ratio, builds the canonical Merkle tree, and registers new chunks.
+      parameters:
+        - name: X-Correlation-ID
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DedupComputeRequest'
+            example:
+              file_id: "file_report_2026.pdf"
+              chunk_boundaries: "fixed"
+              chunk_size: 65536
+              hash_algorithm: "SHA-256"
+              index_version: "v1.0.0"
+              raw_text: "Smart File Backup System - Academic Year 2026-27 Reference Dataset"
+      responses:
+        '200':
+          description: Successful deduplication computation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DedupResultResponse'
+        '400':
+          description: Invalid hash algorithm or malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Stale or mismatched index version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/dedup/{resultId}:
+    get:
+      summary: Get Dedup Result
+      description: Read dedup ratio, savings, chunk lists, and algorithm metadata by result ID.
+      parameters:
+        - name: resultId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Correlation-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dedup result found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DedupResultResponse'
+        '404':
+          description: Result ID not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/chunks/index:
+    get:
+      summary: Get Chunk Index Summary
+      description: Primary consumer Team D. Renders chunk coverage, total chunks, total bytes, and active version.
+      parameters:
+        - name: X-Correlation-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chunk index rendered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkIndexResponseEnvelope'
+
+  /internal/v1/chunks/{chunkId}:
+    put:
+      summary: Register Authoritative Chunk
+      description: Internal endpoint for Team C/Admin to create or update an authoritative chunk record.
+      parameters:
+        - name: chunkId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChunkRecord'
+      responses:
+        '200':
+          description: Chunk successfully recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkRecordResponse'
+
+  /api/v1/integrity/verify:
+    post:
+      summary: Verify Integrity with Merkle Tree
+      description: Constructs canonical Merkle tree over chunk hashes, checks against expected root, and isolates corruptions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntegrityVerifyRequest'
+      responses:
+        '200':
+          description: Integrity verification completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrityVerifyResponseEnvelope'
+
+  /internal/v1/hash-index/{key}:
+    get:
+      summary: Direct Hash Index Lookup
+      description: Direct query against index with microsecond lookup time and cache hit indication.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lookup outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HashLookupResponseEnvelope'
+
+  /internal/v1/hash-cache/invalidate:
+    post:
+      summary: Invalidate Stale Cache Entries
+      description: Invalidate single hash or flush entire cache; returns latency in ms.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CacheInvalidateRequest'
+      responses:
+        '200':
+          description: Invalidation outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheInvalidateResponseEnvelope'
+
+  /api/v1/metrics/dedup:
+    get:
+      summary: Read Dedup Metrics & Telemetry
+      description: Returns p95 latency, cache hit rates, memory footprint across data structures, and throughput.
+      responses:
+        '200':
+          description: Telemetry data returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DedupMetricsResponseEnvelope'
+
+components:
+  schemas:
+    MetaEnvelope:
+      type: object
+      properties:
+        correlation_id:
+          type: string
+        api_version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+
+    ErrorResponse:
+      type: object
+      required: [error, meta]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    DedupComputeRequest:
+      type: object
+      required: [file_id]
+      properties:
+        file_id:
+          type: string
+        chunk_boundaries:
+          type: string
+          enum: [fixed, content-defined]
+          default: fixed
+        chunk_size:
+          type: integer
+          default: 65536
+        hash_algorithm:
+          type: string
+          enum: [SHA-256, Rabin-Karp, rolling-hash]
+          default: SHA-256
+        index_version:
+          type: string
+          default: v1.0.0
+        diff_algorithm:
+          type: string
+          default: chunk-diff-v1
+        optimization_metric:
+          type: string
+          default: savings_ratio
+        content_b64:
+          type: string
+        raw_text:
+          type: string
+        existing_chunk_ids:
+          type: array
+          items:
+            type: string
+
+    DedupResult:
+      type: object
+      properties:
+        dedup_result_id:
+          type: string
+        file_id:
+          type: string
+        total_chunks:
+          type: integer
+        unique_chunks:
+          type: integer
+        duplicate_chunks:
+          type: integer
+        unique_chunk_ids:
+          type: array
+          items:
+            type: string
+        duplicate_chunk_ids:
+          type: array
+          items:
+            type: string
+        original_size_bytes:
+          type: integer
+        delta_size_bytes:
+          type: integer
+        savings_ratio:
+          type: number
+        algorithm:
+          type: string
+        hash_algorithm:
+          type: string
+        index_version:
+          type: string
+        merkle_root:
+          type: string
+        computed_at:
+          type: string
+          format: date-time
+
+    DedupResultResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DedupResult'
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    ChunkRecord:
+      type: object
+      required: [chunk_id, chunk_hash, chunk_size]
+      properties:
+        chunk_id:
+          type: string
+        chunk_hash:
+          type: string
+        chunk_size:
+          type: integer
+        hash_algorithm:
+          type: string
+          default: SHA-256
+
+    ChunkRecordResponse:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ChunkRecord'
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    ChunkIndexResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            chunk_version:
+              type: string
+            total_chunks:
+              type: integer
+            total_bytes:
+              type: integer
+            chunks:
+              type: array
+              items:
+                type: object
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    IntegrityVerifyRequest:
+      type: object
+      required: [file_id, chunk_hashes]
+      properties:
+        file_id:
+          type: string
+        chunk_hashes:
+          type: array
+          items:
+            type: string
+        expected_merkle_root:
+          type: string
+        verification_algorithm:
+          type: string
+          default: merkle_tree
+
+    IntegrityVerifyResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            file_id:
+              type: string
+            merkle_root:
+              type: string
+            is_valid:
+              type: boolean
+            total_chunks:
+              type: integer
+            verified_chunks:
+              type: array
+              items:
+                type: string
+            corrupted_chunks:
+              type: array
+              items:
+                type: string
+            verification_latency_ms:
+              type: number
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    HashLookupResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            key:
+              type: string
+            existing_chunk_ref:
+              type: string
+            found:
+              type: boolean
+            lookup_time_us:
+              type: number
+            cache_hit:
+              type: boolean
+            index_version:
+              type: string
+            index_type:
+              type: string
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    CacheInvalidateRequest:
+      type: object
+      properties:
+        key:
+          type: string
+        invalidate_all:
+          type: boolean
+
+    CacheInvalidateResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            invalidated_count:
+              type: integer
+            invalidation_latency_ms:
+              type: number
+            status:
+              type: string
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
+
+    DedupMetricsResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            service:
+              type: string
+            index_version:
+              type: string
+            active_index_adapter:
+              type: string
+            total_chunks_indexed:
+              type: integer
+            cache_hit_rate_pct:
+              type: number
+            dedup_computation_p95_ms:
+              type: number
+            hash_index_lookup_p95_us:
+              type: number
+            verification_p95_ms:
+              type: number
+            memory_footprint_bytes:
+              type: object
+        meta:
+          $ref: '#/components/schemas/MetaEnvelope'
