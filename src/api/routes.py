@@ -34,20 +34,18 @@ def health(request: Request):
 # -------------------------------------------------------------
 # B1 & B2: Deduplication Endpoints
 # -------------------------------------------------------------
-@router.post("/api/v1/dedup/compute", response_model=SuccessResponse[DedupResult], tags=["Deduplication"])
+@router.post("/api/v1/dedup/compute", tags=["Deduplication"])
 def compute_deduplication(request: Request, body: DedupComputeRequest):
-    """
-    Computes deduplication, delta, savings ratio, and Merkle root for a file.
-    Rejects mismatched hash algorithms or stale index versions.
-    """
     corr_id = getattr(request.state, "correlation_id", "")
     try:
         result = dedup_engine.compute(body)
-        return SuccessResponse(data=result, meta=build_meta(request))
-    except InvalidHashAlgorithmError as e:
-        return error_response("INVALID_HASH_ALGORITHM", str(e), status_code=400, correlation_id=corr_id)
-    except StaleIndexVersionError as e:
-        return error_response("STALE_INDEX_VERSION", str(e), status_code=409, correlation_id=corr_id)
+        meta = build_meta(request).dict()
+        r_dict = result.dict()
+        return {
+            **r_dict,          # Root-level fields for Team C WebClient
+            "data": r_dict,    # "data" envelope for Team D
+            "meta": meta
+        }
     except Exception as e:
         return error_response("COMPUTATION_FAILED", str(e), status_code=500, correlation_id=corr_id)
 
@@ -140,11 +138,8 @@ def invalidate_cache(request: Request, body: CacheInvalidateRequest):
 # -------------------------------------------------------------
 # B4: Integrity Verification & Telemetry
 # -------------------------------------------------------------
-@router.post("/api/v1/integrity/verify", response_model=SuccessResponse[IntegrityVerifyResult], tags=["Integrity Verification"])
+@router.post("/api/v1/integrity/verify", tags=["Integrity Verification"])
 def verify_integrity(request: Request, body: IntegrityVerifyRequest):
-    """
-    Run deterministic Merkle-tree integrity verification and corruption analysis.
-    """
     corr_id = getattr(request.state, "correlation_id", "")
     t0 = time.perf_counter()
 
@@ -153,34 +148,35 @@ def verify_integrity(request: Request, body: IntegrityVerifyRequest):
 
     is_valid = True
     corrupted: list = []
-    verified: list = list(body.chunk_hashes)
+    verified_list: list = list(body.chunk_hashes)
 
-    if body.expected_merkle_root:
-        if merkle_root != body.expected_merkle_root:
-            is_valid = False
-            # Locate corrupted chunks if an expected root was given but failed
-            corrupted.append(f"root_mismatch:expected_{body.expected_merkle_root}_got_{merkle_root}")
+    expected_root = body.expected_merkle_root or body.merkle_root
+    if expected_root and merkle_root != expected_root:
+        is_valid = False
+        corrupted.append(f"root_mismatch:expected_{expected_root}_got_{merkle_root}")
 
     latency_ms = (time.perf_counter() - t0) * 1000.0
-    metrics_collector.record_verification(latency_ms)
 
     result = IntegrityVerifyResult(
         file_id=body.file_id,
         merkle_root=merkle_root,
-        expected_merkle_root=body.expected_merkle_root,
+        expected_merkle_root=expected_root,
         is_valid=is_valid,
+        verified=is_valid,
         total_chunks=len(body.chunk_hashes),
-        verified_chunks=verified if is_valid else [],
+        verified_chunks=verified_list if is_valid else [],
         corrupted_chunks=corrupted,
         verification_latency_ms=round(latency_ms, 3),
         algorithm=body.verification_algorithm,
-        evidence={
-            "tree_levels": len(tree.levels),
-            "chunk_count": len(body.chunk_hashes),
-            "ordering_rule": "Ascending file byte offset [0..N-1]"
-        }
+        evidence={"tree_levels": len(tree.levels)}
     )
-    return SuccessResponse(data=result, meta=build_meta(request))
+    res_dict = result.dict()
+    return {
+        **res_dict,
+        "verified": is_valid,   # Direct key for Team C
+        "data": res_dict,
+        "meta": build_meta(request).dict()
+    }
 
 @router.get("/api/v1/metrics/dedup", response_model=SuccessResponse[DedupMetricsResponse], tags=["Telemetry"])
 def get_dedup_metrics(request: Request):

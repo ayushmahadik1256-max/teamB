@@ -1,52 +1,50 @@
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from .api.routes import router
-from .api.middleware import CorrelationIdMiddleware, error_response
-from .config import SERVICE_NAME, API_VERSION
+from datetime import datetime, timezone
+import uuid
 
 app = FastAPI(
-    title="Smart File Backup System - Team B Engine",
-    description="Deduplication & Integrity Engine (Chunking, Hash Indexing, Deduplication, Merkle Trees, Telemetry)",
+    title="Smart File Backup System - Team A Engine",
+    description="Backup Job Scheduler & Concurrency Locks (OS Engine)",
     version="1.0.0",
     docs_url="/docs",
     openapi_url="/openapi.json"
 )
 
-# CORS
+# CORS Middleware with exposed headers for browser frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID", "X-API-Version", "Idempotency-Key"],
 )
 
-# Correlation ID Middleware
-app.add_middleware(CorrelationIdMiddleware)
-
-# Exception handlers for standard error envelope
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    corr_id = getattr(request.state, "correlation_id", "")
+    corr_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
     details = [{"field": ".".join(str(loc) for loc in err["loc"]), "message": err["msg"], "code": err["type"]} for err in exc.errors()]
-    return error_response(
-        code="INVALID_ARGUMENT",
-        message="Request payload validation failed",
-        details=details,
+    return JSONResponse(
         status_code=422,
-        correlation_id=corr_id
+        content={
+            "error": {"code": "INVALID_ARGUMENT", "message": "Request payload validation failed", "details": details},
+            "meta": {"correlation_id": corr_id, "api_version": "v1", "timestamp": datetime.now(timezone.utc).isoformat()}
+        }
     )
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    corr_id = getattr(request.state, "correlation_id", "")
-    return error_response(
-        code="INTERNAL_SERVER_ERROR",
-        message=str(exc),
+    corr_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    return JSONResponse(
         status_code=500,
-        correlation_id=corr_id
+        content={
+            "error": {"code": "INTERNAL_SERVER_ERROR", "message": str(exc), "details": []},
+            "meta": {"correlation_id": corr_id, "api_version": "v1", "timestamp": datetime.now(timezone.utc).isoformat()}
+        }
     )
 
-# Include routes
 app.include_router(router)

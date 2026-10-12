@@ -56,6 +56,7 @@ class DedupComputeRequest(BaseModel):
     raw_text: Optional[str] = None
     existing_chunk_ids: Optional[List[str]] = None
 
+
 class DedupResult(BaseModel):
     dedup_result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     file_id: str
@@ -64,6 +65,7 @@ class DedupResult(BaseModel):
     duplicate_chunks: int
     unique_chunk_ids: List[str]
     duplicate_chunk_ids: List[str]
+    chunk_refs: List[str] = Field(default_factory=list)  # <-- Added for Team C compatibility
     original_size_bytes: int
     delta_size_bytes: int
     savings_ratio: float
@@ -75,16 +77,19 @@ class DedupResult(BaseModel):
 
 class IntegrityVerifyRequest(BaseModel):
     file_id: str
-    chunk_hashes: List[str]
+    chunk_hashes: List[str] = Field(default_factory=list)  # <-- Default empty list
     expected_merkle_root: Optional[str] = None
+    merkle_root: Optional[str] = None                     # <-- Accept Team C's key name
     verification_algorithm: str = "merkle_tree"
     benchmark_reps: int = 1
+    simulate_corruption: Optional[bool] = False
 
 class IntegrityVerifyResult(BaseModel):
     file_id: str
     merkle_root: str
     expected_merkle_root: Optional[str] = None
     is_valid: bool
+    verified: bool = True                                 # <-- Added for Team C compatibility
     total_chunks: int
     verified_chunks: List[str]
     corrupted_chunks: List[str]
